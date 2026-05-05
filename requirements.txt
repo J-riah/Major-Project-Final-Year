@@ -7,3 +7,4 @@ nltk
 rouge-score
 networkx
 matplotlib
+scipy
