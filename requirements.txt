@@ -3,9 +3,9 @@ streamlit
 pandas
 json5
 pillow
-nltk
-rouge-score
 networkx
 matplotlib
 scipy
-numpy
+transformers
+sentence-transformers
+torch
