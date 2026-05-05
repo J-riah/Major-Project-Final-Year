@@ -5,6 +5,9 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import google.generativeai as genai
 from PIL import Image
+import torch
+from transformers import pipeline
+from sentence_transformers import SentenceTransformer, util
 
 # ==========================================
 # 1. SETUP & SECRETS CONFIGURATION
@@ -23,52 +26,124 @@ except Exception:
 MODEL_NAME = "models/gemini-2.5-pro"
 
 # ==========================================
-# 2. STAGE 1: PROFESSIONAL NETWORK PLOTTING
+# 2. LOAD ML MODELS (CACHED FOR SPEED)
+# ==========================================
+@st.cache_resource
+def load_scoring_models():
+    """Loads the Hugging Face models used in the Stage 1 notebook."""
+    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+    embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+    return classifier, embedding_model
+
+classifier, embedding_model = load_scoring_models()
+
+# Define Knowledge Base exactly as in notebook
+candidate_labels = ["criminal conspiracy", "issuing a command", "normal conversation"]
+prototypes_by_category = {
+    "Threats & Enforcement": ["Make him understand the consequences.", "Send a clear message.", "Neutralize the threat."],
+    "Financial Transactions": ["Confirm the payment.", "Launder the money.", "Settle the accounts.", "Look at this cash."],
+    "Commands & Directives": ["Get the job done now.", "Proceed with the plan.", "Green-light the operation."],
+    "Secrecy & Evasion": ["Use the secure line.", "Delete this after reading.", "Use the burner phone."],
+    "Acquiring Resources": ["Acquire the equipment.", "Source the vehicle.", "Here are the weapons."],
+    "Logistics & Transport": ["Coordinate the pickup.", "The package is delivered.", "Move the merchandise."],
+    "Reporting & Status Updates": ["Report your status.", "Target is under surveillance.", "Operation complete."]
+}
+category_weights = {
+    "Commands & Directives": 1.8, "Financial Transactions": 1.6, "Threats & Enforcement": 1.5,
+    "Secrecy & Evasion": 1.2, "Logistics & Transport": 0.8, "Acquiring Resources": 0.7, "Reporting & Status Updates": 0.5
+}
+# Pre-compute prototype embeddings
+prototype_embeddings_by_category = {
+    cat: embedding_model.encode(sents, convert_to_tensor=True) 
+    for cat, sents in prototypes_by_category.items()
+}
+
+# ==========================================
+# 3. STAGE 1: PROFESSIONAL NETWORK PLOTTING
 # ==========================================
 def process_stage_1(chat_data):
-    G = nx.DiGraph()
+    """Exact replica of Stage 1 ML logic to calculate proper weights."""
+    directed_edge_weights = {}
     
+    # EXACT Scoring Logic from your Colab Notebook
     for msg in chat_data:
-        u, v = msg.get("sender"), msg.get("receiver")
-        w = msg.get("weight", 1.0) 
+        sender = msg.get('sender')
+        receiver = msg.get('receiver')
+        text = msg.get('message_text')
         
-        if u and v:
-            G.add_edge(u, v, weight=float(w))
+        if not text or not sender or not receiver:
+            continue
+            
+        try:
+            # Zero-shot
+            result = classifier(text, candidate_labels, multi_label=False)
+            score_map = {label: score for label, score in zip(result['labels'], result['scores'])}
+            c_score = (score_map.get("criminal conspiracy", 0) * 1.5) + (score_map.get("issuing a command", 0) * 1.0)
+            
+            # Semantic Similarity
+            msg_emb = embedding_model.encode(text, convert_to_tensor=True)
+            sem_score = 0
+            for cat, proto_embs in prototype_embeddings_by_category.items():
+                best_sim = torch.max(util.cos_sim(msg_emb, proto_embs)).item()
+                curr_score = best_sim * category_weights[cat]
+                if curr_score > sem_score: 
+                    sem_score = curr_score
+                    
+            # Hybrid Score
+            final_weight = ((0.3 * c_score) + (0.7 * sem_score)) * 2.0
+            edge = (sender, receiver)
+            directed_edge_weights[edge] = directed_edge_weights.get(edge, 0) + final_weight
+        except Exception:
+            continue
 
-    # Table Scores (HITS Algorithm)
-    hubs, authorities = nx.hits(G, max_iter=100)
+    # Build Graph & HITS
+    G = nx.DiGraph()
+    for (u, v), w in directed_edge_weights.items():
+        if w > 1.2: 
+            G.add_edge(u, v, weight=round(w, 2))
+            
+    if G.number_of_nodes() == 0:
+        return None, None
+
+    hubs, authorities = nx.hits(G, max_iter=1000, normalized=True)
     
-    # Forensic Role Assignment
-    top_hub = max(hubs, key=hubs.get)
-    sorted_auth = sorted(authorities.items(), key=lambda x: x[1], reverse=True)
-    middlemen = [n for n, s in sorted_auth[:2] if n != top_hub]
-
-    node_colors = []
-    for node in G.nodes():
-        if node == top_hub: node_colors.append("red")
-        elif node in middlemen: node_colors.append("orange")
-        else: node_colors.append("skyblue")
-
-    fig, ax = plt.subplots(figsize=(12, 8))
-    pos = nx.spring_layout(G, k=1.0, iterations=50) 
+    # Identify Roles
+    avg_hub = sum(hubs.values()) / len(hubs) if hubs else 0
+    avg_auth = sum(authorities.values()) / len(authorities) if authorities else 0
     
-    # Nodes with black outlines
+    potential_mms = [n for n in G.nodes() if hubs[n] > avg_hub * 1.2]
+    mastermind = max(potential_mms, key=lambda x: hubs[x]) if potential_mms else None
+    
+    roles = {}
+    for n in G.nodes():
+        if n == mastermind: roles[n] = "Mastermind"
+        elif authorities[n] > avg_auth * 1.5: roles[n] = "Middleman"
+        else: roles[n] = "Follower"
+
+    # EXACT Plotting Parameters from the Notebook
+    fig, ax = plt.subplots(figsize=(16, 12))
+    pos = nx.spring_layout(G, k=2.5, seed=42, iterations=80) 
+    
+    role_colors_map = {"Mastermind": "red", "Middleman": "orange", "Follower": "skyblue"}
+    node_colors = [role_colors_map.get(roles.get(node, "Follower"), "skyblue") for node in G.nodes()]
+    
     nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=3000, edgecolors='black', ax=ax)
-    nx.draw_networkx_labels(G, pos, font_size=10, font_weight='bold', ax=ax)
     
-    for u, v, d in G.edges(data=True):
-        nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], width=d['weight'] * 2, 
-                               edge_color='grey', alpha=0.7, arrowsize=25, ax=ax)
+    # Edges with thickness matching notebook
+    edge_weights_list = [G[u][v]['weight'] for u, v in G.edges()]
+    nx.draw_networkx_edges(G, pos, width=[min(w, 5) for w in edge_weights_list], 
+                           edge_color='gray', arrowsize=20, node_size=3000, ax=ax)
+                           
+    nx.draw_networkx_labels(G, pos, font_size=12, font_weight='bold', ax=ax)
     
-    edge_labels = { (u, v): f"{d['weight']:.2f}" for u, v, d in G.edges(data=True) }
-    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_color='green', 
-                                 font_size=9, label_pos=0.5, font_weight='bold')
+    edge_labels = nx.get_edge_attributes(G, 'weight')
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_color='darkgreen', ax=ax)
 
     from matplotlib.lines import Line2D
     legend_elements = [
-        Line2D([0], [0], marker='o', color='w', label='Mastermind (Top Hub)', markerfacecolor='red', markersize=12),
-        Line2D([0], [0], marker='o', color='w', label='Middleman (High Auth)', markerfacecolor='orange', markersize=12),
-        Line2D([0], [0], marker='o', color='w', label='Follower', markerfacecolor='skyblue', markersize=12)
+        Line2D([0], [0], marker='o', color='w', label='Mastermind (Top Hub)', markerfacecolor='red', markersize=15),
+        Line2D([0], [0], marker='o', color='w', label='Middleman (High Authority)', markerfacecolor='orange', markersize=15),
+        Line2D([0], [0], marker='o', color='w', label='Follower', markerfacecolor='skyblue', markersize=15)
     ]
     ax.legend(handles=legend_elements, loc='upper right', title="Roles")
     
@@ -78,6 +153,7 @@ def process_stage_1(chat_data):
     buf.seek(0)
     plt.close(fig)
     
+    # DataFrame
     df = pd.DataFrame({
         "Actor": list(hubs.keys()),
         "Hub_Score": [round(v, 4) for v in hubs.values()],
@@ -85,12 +161,11 @@ def process_stage_1(chat_data):
     }).sort_values("Hub_Score", ascending=False)
     
     return buf, df
+
 # ==========================================
-# 3. STAGE 2: MULTIMODAL FORENSIC REPORT
+# 4. STAGE 2: MULTIMODAL FORENSIC REPORT
 # ==========================================
 def process_stage_2(chat_data, graph_bytes, centrality_df, audio_files, image_files):
-    """Combines all input types for LLM processing[cite: 2]."""
-    
     participants = sorted(set(m["sender"] for m in chat_data if m.get("sender")) | 
                           set(m["receiver"] for m in chat_data if m.get("receiver")))
     
@@ -112,19 +187,16 @@ def process_stage_2(chat_data, graph_bytes, centrality_df, audio_files, image_fi
     }}
     """
     
-    # Feed Stage 1 output image directly into Stage 2 prompt[cite: 2]
     parts = [
         prompt, 
         {"mime_type": "image/png", "data": graph_bytes.getvalue()}, 
         f"CENTRALITY DATA:\n{centrality_df.to_string(index=False)}"
     ]
 
-    # Modality: Text
     chat_text = "\n".join([f"{m['sender']} -> {m['receiver']}: {m['message_text']}" 
                            for m in chat_data if m.get("message_text")])
     parts.append(f"CHAT LOGS:\n{chat_text}")
 
-    # Modality: Audio/Image
     if audio_files:
         for audio in audio_files:
             parts.append({"mime_type": "audio/mpeg", "data": audio.read()})
@@ -139,7 +211,7 @@ def process_stage_2(chat_data, graph_bytes, centrality_df, audio_files, image_fi
     return json5.loads(clean_text)
 
 # ==========================================
-# 4. USER INTERFACE
+# 5. USER INTERFACE
 # ==========================================
 st.markdown("---")
 cols = st.columns(3)
@@ -154,30 +226,31 @@ if json_up:
     chat_history = json.load(json_up)
     
     if st.button("🚀 Run Forensic Analysis"):
-        # RUN STAGE 1
-        with st.spinner("Plotting Network..."):
+        with st.spinner("Analyzing Texts & Plotting Network (This may take a minute to run ML models)..."):
             graph_buf, stats_df = process_stage_1(chat_history)
             
-        st.subheader("📍 Stage 1 Output: Network Analysis")
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            st.image(graph_buf, caption="Criminal Network Graph (Passed to Stage 2)")
-        with c2:
-            st.write("**Node Importance**")
-            st.dataframe(stats_df, hide_index=True)
+        if graph_buf is None:
+            st.warning("Graph empty (no strong evidence found based on weight threshold).")
+        else:
+            st.subheader("📍 Stage 1 Output: Network Analysis")
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.image(graph_buf, caption="Criminal Network Graph (Passed to Stage 2)")
+            with c2:
+                st.write("**Node Importance**")
+                st.dataframe(stats_df, hide_index=True)
+                
+            with st.spinner("Generating Forensic Report..."):
+                report = process_stage_2(chat_history, graph_buf, stats_df, audio_up, img_up)
+                
+            st.divider()
+            st.subheader("📋 Stage 2 Output: Forensic Report")
             
-        # RUN STAGE 2
-        with st.spinner("Generating Forensic Report..."):
-            report = process_stage_2(chat_history, graph_buf, stats_df, audio_up, img_up)
-            
-        st.divider()
-        st.subheader("📋 Stage 2 Output: Forensic Report")
-        
-        rep_col1, rep_col2 = st.columns([2, 1])
-        with rep_col1:
-            st.success(f"**Intent:** {report.get('intent_classification')}")
-            st.write(f"**Summary:** {report.get('summary')}")
-        with rep_col2:
-            st.metric("Confidence", f"{int(report.get('confidence_score', 0) * 100)}%")
-            st.write("**Identified Roles:**")
-            st.json(report.get("roles"))
+            rep_col1, rep_col2 = st.columns([2, 1])
+            with rep_col1:
+                st.success(f"**Intent:** {report.get('intent_classification')}")
+                st.write(f"**Summary:** {report.get('summary')}")
+            with rep_col2:
+                st.metric("Confidence", f"{int(report.get('confidence_score', 0) * 100)}%")
+                st.write("**Identified Roles:**")
+                st.json(report.get("roles"))
