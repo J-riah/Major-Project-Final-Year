@@ -1,0 +1,9 @@
+google-generativeai
+streamlit
+pandas
+json5
+pillow
+nltk
+rouge-score
+networkx
+matplotlib
