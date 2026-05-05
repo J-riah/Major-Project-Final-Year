@@ -8,3 +8,4 @@ rouge-score
 networkx
 matplotlib
 scipy
+numpy
