@@ -26,23 +26,16 @@ MODEL_NAME = "models/gemini-2.5-pro"
 # 2. STAGE 1: PROFESSIONAL NETWORK PLOTTING
 # ==========================================
 def process_stage_1(chat_data):
-    """
-    Exact replica of the graphing logic from Stage 1.ipynb.
-    Uses the notebook's specific edge weight calculation and design.
-    """
     G = nx.DiGraph()
     
-    # Use the specific weight calculation from Stage 1 notebook
     for msg in chat_data:
         u, v = msg.get("sender"), msg.get("receiver")
-        weight = msg.get("weight", 1.0) # Ensure it pulls the notebook's weight value
+        w = msg.get("weight", 1.0) 
+        
         if u and v:
-            if G.has_edge(u, v):
-                G[u][v]['weight'] += weight
-            else:
-                G.add_edge(u, v, weight=weight)
+            G.add_edge(u, v, weight=float(w))
 
-    # Table Scores (HITS Algorithm)[cite: 2]
+    # Table Scores (HITS Algorithm)
     hubs, authorities = nx.hits(G, max_iter=100)
     
     # Forensic Role Assignment
@@ -56,25 +49,21 @@ def process_stage_1(chat_data):
         elif node in middlemen: node_colors.append("orange")
         else: node_colors.append("skyblue")
 
-    # Exact Notebook Drawing Parameters
     fig, ax = plt.subplots(figsize=(12, 8))
-    pos = nx.spring_layout(G, k=1.0, iterations=50) # Matching notebook layout[cite: 3]
+    pos = nx.spring_layout(G, k=1.0, iterations=50) 
     
     # Nodes with black outlines
     nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=3000, edgecolors='black', ax=ax)
     nx.draw_networkx_labels(G, pos, font_size=10, font_weight='bold', ax=ax)
     
-    # Edges with thickness matching image 1[cite: 3]
     for u, v, d in G.edges(data=True):
         nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], width=d['weight'] * 2, 
                                edge_color='grey', alpha=0.7, arrowsize=25, ax=ax)
     
-    # Edge Weight Labels - Exact same formatting as image 1[cite: 3]
     edge_labels = { (u, v): f"{d['weight']:.2f}" for u, v, d in G.edges(data=True) }
     nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_color='green', 
                                  font_size=9, label_pos=0.5, font_weight='bold')
 
-    # Legend exactly as shown in notebook[cite: 3]
     from matplotlib.lines import Line2D
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', label='Mastermind (Top Hub)', markerfacecolor='red', markersize=12),
@@ -89,7 +78,6 @@ def process_stage_1(chat_data):
     buf.seek(0)
     plt.close(fig)
     
-    # DataFrame for Stage 2[cite: 2]
     df = pd.DataFrame({
         "Actor": list(hubs.keys()),
         "Hub_Score": [round(v, 4) for v in hubs.values()],
